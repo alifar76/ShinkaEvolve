@@ -162,11 +162,37 @@ class HomeoCMA:
             )
         )
 
-    def sample(self, parent_x: np.ndarray, rng: np.random.Generator, scale: float = 1.0) -> np.ndarray:
+    def sample(
+        self,
+        parent_x: np.ndarray,
+        rng: np.random.Generator,
+        scale: float = 1.0,
+        sparse_k: Optional[int] = None,
+    ) -> np.ndarray:
         """Step 4 (corrected): anisotropic mutation, informed by elite
-        covariance rather than a hand-set per-dimension bias."""
+        covariance rather than a hand-set per-dimension bias.
+
+        sparse_k restricts the mutation to that many dimensions instead of
+        all `dim` at once, chosen with probability proportional to their
+        current variance (touch what's still unresolved, leave what's
+        converged alone). This matters architecturally, not just
+        stylistically: a real LLM code patch edits a few lines, not the
+        whole file, and dense all-dimension joint steps need EVERY
+        dimension to land well simultaneously to net an improvement --
+        measurably slower at discovery than sparse edits on both
+        landscapes tested (see benchmark_homeocma.py). The per-dimension
+        STEP SIZE is still fully informed by the learned covariance either
+        way; only the "how many things to touch at once" question
+        changes."""
+        x = np.array(parent_x, dtype=float, copy=True)
+        if sparse_k is not None and sparse_k < self.dim:
+            probs = self.c / self.c.sum()
+            idx = rng.choice(self.dim, size=sparse_k, replace=False, p=probs)
+            z = rng.normal(size=sparse_k)
+            x[idx] = x[idx] + scale * self.sigma * np.sqrt(self.c[idx]) * z
+            return x
         z = rng.normal(size=self.dim)
-        return parent_x + scale * self.sigma * np.sqrt(self.c) * z
+        return x + scale * self.sigma * np.sqrt(self.c) * z
 
 
 def recent_success_rate(db: Any, dim: int, lambda_robust: float, window: int = 20) -> Optional[float]:
@@ -244,9 +270,14 @@ def make_homeocma_mutate(
         if patch_type == "cross" and cross_partner is not None:
             mask = rng.random(dim) < 0.5
             x = np.where(mask, parent_x, np.asarray(cross_partner, dtype=float))
+        elif patch_type == "full":
+            x = cma.sample(parent_x, rng, scale=full_scale)  # dense: a full rewrite touches everything
         else:
-            scale = full_scale if patch_type == "full" else 1.0
-            x = cma.sample(parent_x, rng, scale=scale)
+            # "diff": a sparse edit, same k-dims-touched convention as the
+            # isotropic baseline, but WHICH dims and how big a step is
+            # informed by the learned covariance.
+            k = int(rng.integers(1, max(2, dim // 2 + 1)))
+            x = cma.sample(parent_x, rng, scale=1.0, sparse_k=k)
         return np.clip(x, -bounds, bounds)
 
     return mutate_fn, cma
