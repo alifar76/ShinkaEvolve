@@ -18,6 +18,7 @@ Metrics:
 
 import statistics
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -117,9 +118,11 @@ def run_condition(label: str, mutate_fn) -> Dict:
 
 
 def main():
+    gated_motif_mutate = partial(motif_aware_mutate, activation_threshold=0.15)
     conditions = [
         ("isotropic (baseline)", isotropic_mutate),
-        ("motif-aware", motif_aware_mutate),
+        ("motif-aware (naive)", motif_aware_mutate),
+        ("motif-aware (gated)", gated_motif_mutate),
     ]
     results = [run_condition(label, fn) for label, fn in conditions]
 

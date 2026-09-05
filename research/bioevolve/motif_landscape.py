@@ -96,6 +96,7 @@ def motif_aware_mutate(
     protect_frac: float = 0.4,
     protect_factor: float = 0.15,
     boost_factor: float = 1.4,
+    activation_threshold: float = 0.0,
 ) -> np.ndarray:
     """Same patch-type structure as landscape.mutate, but with a per-
     dimension step size derived from the archive's own observed variance:
@@ -105,16 +106,26 @@ def motif_aware_mutate(
     `boost_factor` so total exploration effort is redirected, not just
     reduced. Falls back to plain isotropic mutation until the archive has
     at least `min_archive` members with embeddings (nothing to condition
-    on yet)."""
+    on yet).
+
+    activation_threshold guards against a real failure mode (see
+    step4_motif.py): before any program has found real signal (fitness
+    ~0 everywhere), archive variance reflects pure genetic drift, not
+    function -- and a mutator that "protects" a dimension flagged
+    conserved by drift alone can cement a wrong bottleneck. When > 0,
+    the anisotropic bias only activates once the archive's best
+    combined_score exceeds this threshold, i.e. once there is actual
+    fitness signal to read conservation from."""
     x = np.array(parent_x, dtype=float, copy=True)
     per_dim_scale = np.full(dim, step_scale)
 
     if db is not None:
         archive = db._get_archive_programs()
+        best_score = max((p.combined_score or 0.0) for p in archive) if archive else 0.0
         embeds = [
             p.embedding for p in archive if p.embedding and len(p.embedding) == dim
         ]
-        if len(embeds) >= min_archive:
+        if best_score >= activation_threshold and len(embeds) >= min_archive:
             var = np.var(np.array(embeds), axis=0)
             order = np.argsort(var)
             n_protect = max(1, int(dim * protect_frac))
