@@ -1648,6 +1648,8 @@ class ShinkaEvolveRunner:
                 "evaluation_worker_capacity": self.max_evaluation_jobs,
                 "postprocess_worker_capacity": self.max_db_workers,
             }
+            if metrics_val.get("combined_score_std") is not None:
+                base_metadata["eval_score_std"] = metrics_val["combined_score_std"]
 
             # For file-based initial programs, add default metadata
             if not llm_metadata:
@@ -4125,6 +4127,7 @@ class ShinkaEvolveRunner:
                 correct_val = results.get("correct", {}).get("correct", False)
                 metrics_val = results.get("metrics", {})
                 combined_score = metrics_val.get("combined_score", 0.0)
+                combined_score_std = metrics_val.get("combined_score_std")
                 public_metrics = metrics_val.get("public", {})
                 private_metrics = metrics_val.get("private", {})
                 text_feedback = metrics_val.get("text_feedback", "")
@@ -4145,6 +4148,7 @@ class ShinkaEvolveRunner:
                 )
                 correct_val = False
                 combined_score = 0.0
+                combined_score_std = None
                 public_metrics = {}
                 private_metrics = {}
                 text_feedback = "Job completed but results could not be retrieved"
@@ -4179,6 +4183,11 @@ class ShinkaEvolveRunner:
                 metadata=with_pipeline_timing(
                     {
                         **(job.meta_patch_data or {}),
+                        **(
+                            {"eval_score_std": combined_score_std}
+                            if combined_score_std is not None
+                            else {}
+                        ),
                         "embed_cost": job.embed_cost,
                         "novelty_cost": job.novelty_cost,
                         "stdout_log": stdout_log,

@@ -1774,6 +1774,67 @@ class ProgramDatabase:
         )
         return [dict(row) for row in self.cursor.fetchall()]
 
+    def get_population_diversity(
+        self,
+        island_idx: Optional[int] = None,
+        since_generation: Optional[int] = None,
+        metric: str = "variance",
+    ) -> Optional[float]:
+        """Compute a diversity ("entropy") measure over the embeddings of
+        correct programs currently in the population.
+
+        This is passive/read-only: it does not affect sampling, archiving,
+        or any other selection logic. It exists so callers (telemetry, a
+        future adaptive controller) can observe how spread out the
+        population currently is in genotype/code-embedding space.
+
+        Args:
+            island_idx: Restrict to one island, or None for the whole
+                population.
+            since_generation: Restrict to programs from this generation
+                onward (a sliding window), or None for all generations.
+            metric: "variance" (sum of per-dimension embedding variance --
+                0 when the population has collapsed onto one point, grows
+                as it spreads out) or "mean_pairwise_distance" (average
+                Euclidean distance between all pairs of embeddings).
+
+        Returns:
+            The diversity value, or None if fewer than 2 programs with
+            embeddings of matching dimensionality are available.
+        """
+        if not self.cursor:
+            raise ConnectionError("DB not connected.")
+        query = (
+            "SELECT embedding FROM programs "
+            "WHERE correct = 1 AND embedding IS NOT NULL AND embedding != '[]'"
+        )
+        params: List[Any] = []
+        if island_idx is not None:
+            query += " AND island_idx = ?"
+            params.append(island_idx)
+        if since_generation is not None:
+            query += " AND generation >= ?"
+            params.append(since_generation)
+        self.cursor.execute(query, params)
+        rows = self.cursor.fetchall()
+        if len(rows) < 2:
+            return None
+
+        vectors = [json.loads(row["embedding"]) for row in rows]
+        lengths = {len(v) for v in vectors}
+        if len(lengths) != 1 or lengths == {0}:
+            return None
+
+        arr = np.array(vectors, dtype=float)
+        if metric == "variance":
+            return float(np.sum(np.var(arr, axis=0)))
+        if metric == "mean_pairwise_distance":
+            diffs = arr[:, None, :] - arr[None, :, :]
+            dists = np.sqrt(np.sum(diffs**2, axis=-1))
+            n = len(arr)
+            return float(np.sum(dists) / (n * (n - 1)))
+        raise ValueError(f"Unknown diversity metric: {metric!r}")
+
     @db_retry()
     def get_all_programs(self) -> List[Program]:
         """Get all programs from the database."""
@@ -2096,9 +2157,20 @@ class ProgramDatabase:
             - complexity: Cyclomatic complexity
             - maintainability: Maintainability index
             - nesting: Maximum nesting depth
+            - robustness: Std-dev of combined_score across repeated
+              evaluation runs (lower = more robust to evaluation noise).
+              Populated from an optional "combined_score_std" key returned
+              by the task's aggregate_metrics_fn (meaningful when
+              num_runs > 1). Use a negative weight to prefer low-variance
+              (robust) programs, matching the loc/complexity convention.
         """
         if criterion == "combined_score":
             return program.combined_score or 0.0
+
+        if criterion == "robustness":
+            if not program.metadata:
+                return 0.0
+            return float(program.metadata.get("eval_score_std", 0.0) or 0.0)
 
         # Get code analysis metrics from metadata
         metrics = {}
